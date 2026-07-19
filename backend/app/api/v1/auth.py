@@ -11,11 +11,14 @@ Provides the OAuth2 flow:
 from __future__ import annotations
 
 from fastapi import APIRouter, HTTPException, Query
+from fastapi.responses import RedirectResponse
 from pydantic import BaseModel
 
-from app.dependencies import get_auth_service_instance
+from app.dependencies import get_auth_service_instance, get_data_manager_instance
+from app.config import get_settings
 
 router = APIRouter()
+settings = get_settings()
 
 
 class TokenInput(BaseModel):
@@ -47,12 +50,17 @@ async def auth_callback(
     auth = get_auth_service_instance()
 
     try:
-        result = await auth.exchange_auth_code(auth_code)
-        return {
-            "status": "authenticated",
-            "message": "Authentication successful! Data pipeline will start.",
-            **result,
-        }
+        await auth.exchange_auth_code(auth_code)
+        
+        # Start/restart data manager pipeline with new credentials
+        dm = get_data_manager_instance()
+        if dm:
+            if dm.is_running:
+                await dm.stop()
+            await dm.start()
+
+        # Redirect user back to frontend dashboard instead of showing raw JSON
+        return RedirectResponse(url=settings.frontend_url)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -65,6 +73,13 @@ async def set_token(token_input: TokenInput):
     if token_input.refresh_token:
         auth._refresh_token = token_input.refresh_token
     await auth._save_tokens()
+
+    # Start/restart data manager pipeline with new credentials
+    dm = get_data_manager_instance()
+    if dm:
+        if dm.is_running:
+            await dm.stop()
+        await dm.start()
 
     return {
         "status": "token_set",
@@ -82,13 +97,7 @@ async def auth_status():
 @router.post("/refresh")
 async def refresh_token():
     """Manually trigger token refresh."""
-    auth = get_auth_service_instance()
-    success = await auth.refresh_access_token()
-
-    if success:
-        return {"status": "refreshed", "message": "Token refreshed successfully."}
-    else:
-        raise HTTPException(
-            status_code=400,
-            detail="Token refresh failed. Re-authenticate via /auth/login.",
-        )
+    raise HTTPException(
+        status_code=400,
+        detail="FYERS refresh tokens have been discontinued by the broker (effective April 1, 2026). Daily manual login is required.",
+    )

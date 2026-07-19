@@ -20,8 +20,11 @@ class MarketTick(Base):
     __tablename__ = "market_ticks"
 
     time: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), primary_key=True, nullable=False
+        DateTime(timezone=True),
+        primary_key=True,
+        nullable=False,
     )
+    
     instrument_id: Mapped[int] = mapped_column(
         Integer, ForeignKey("instruments.id"), nullable=False
     )

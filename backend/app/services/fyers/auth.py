@@ -50,7 +50,7 @@ class FyersAuthService:
     def formatted_token(self) -> Optional[str]:
         """Get the token formatted for FYERS API (app_id:access_token)."""
         if self._access_token:
-            return f"{self._app_id}:{self._access_token}"
+            return f"{self._access_token}"
         return None
 
     def generate_auth_url(self) -> str:
@@ -87,6 +87,8 @@ class FyersAuthService:
             state="aibot_auth",
             grant_type="authorization_code"
         )
+
+        print("auth_code========================================", auth_code)
         session.set_token(auth_code)
 
         # Run synchronous FYERS SDK call in executor

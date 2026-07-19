@@ -92,28 +92,99 @@ class SnapshotWriter:
         self._stats["flush_count"] += 1
         self._stats["last_flush"] = datetime.now().isoformat()
 
+    # async def _flush_ticks(self) -> None:
+    #     """Write buffered tick data to TimescaleDB."""
+    #     if not self._tick_buffer:
+    #         return
+
+    #     # Swap buffer to avoid holding the data while writing
+    #     batch = self._tick_buffer[:]
+    #     self._tick_buffer.clear()
+
+    #     try:
+    #         async with get_async_session() as session:
+    #             from app.db.models.market_ticks import MarketTick
+    #             await session.execute(
+    #                 MarketTick.__table__.insert(),
+    #                 batch,
+    #             )
+    #         self._stats["ticks_written"] += len(batch)
+    #         logger.debug(f"Flushed {len(batch)} ticks to DB")
+    #     except Exception as e:
+    #         logger.error(f"Failed to flush {len(batch)} ticks: {e}")
+    #         self._stats["errors"] += 1
+    #         # Put back failed records for retry (at front of buffer)
+    #         self._tick_buffer = batch + self._tick_buffer
+
     async def _flush_ticks(self) -> None:
         """Write buffered tick data to TimescaleDB."""
         if not self._tick_buffer:
             return
 
-        # Swap buffer to avoid holding the data while writing
         batch = self._tick_buffer[:]
         self._tick_buffer.clear()
 
         try:
+            from sqlalchemy import select
+
+            from app.db.models.instruments import Instrument
+            from app.db.models.market_ticks import MarketTick
+
             async with get_async_session() as session:
-                from app.db.models.market_ticks import MarketTick
+
+                # Resolve instrument IDs
+                for record in batch:
+                    symbol = record["symbol"]
+
+                    instrument = await session.scalar(
+                        select(Instrument).where(Instrument.symbol == symbol)
+                    )
+
+                    # Create instrument if it doesn't exist
+                    if instrument is None:
+                        exchange = symbol.split(":")[0]
+
+                        if symbol.endswith("-INDEX"):
+                            instrument_type = "INDEX"
+                        elif symbol.endswith("-EQ"):
+                            instrument_type = "EQ"
+                        elif "CE" in symbol:
+                            instrument_type = "CE"
+                        elif "PE" in symbol:
+                            instrument_type = "PE"
+                        elif "FUT" in symbol:
+                            instrument_type = "FUT"
+                        else:
+                            instrument_type = "UNKNOWN"
+
+                        instrument = Instrument(
+                            symbol=symbol,
+                            exchange=exchange,
+                            instrument_type=instrument_type,
+                            name=symbol,
+                        )
+
+                        session.add(instrument)
+
+                        # Get auto-generated ID
+                        await session.flush()
+
+                    record["instrument_id"] = instrument.id
+
+                # Bulk insert ticks
                 await session.execute(
                     MarketTick.__table__.insert(),
                     batch,
                 )
+
             self._stats["ticks_written"] += len(batch)
             logger.debug(f"Flushed {len(batch)} ticks to DB")
+
         except Exception as e:
-            logger.error(f"Failed to flush {len(batch)} ticks: {e}")
+            logger.exception(f"Failed to flush {len(batch)} ticks")
             self._stats["errors"] += 1
-            # Put back failed records for retry (at front of buffer)
+
+            # Restore batch for retry
             self._tick_buffer = batch + self._tick_buffer
 
     async def _flush_chain(self) -> None:

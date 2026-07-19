@@ -85,6 +85,7 @@ async def get_tick_history(
 async def get_option_chain(
     underlying: str,
     expiry: Optional[str] = Query(None, description="Expiry date YYYY-MM-DD"),
+    session: AsyncSession = Depends(get_session),
 ):
     """Get the latest option chain with Greeks for an underlying.
 
@@ -102,6 +103,40 @@ async def get_option_chain(
                 "data": cached,
                 "count": len(cached),
             }
+
+    # Fallback to database
+    repo = OptionChainRepository(session)
+    expiry_date = date.fromisoformat(expiry) if expiry else None
+    chain = await repo.get_latest_chain(underlying, expiry_date)
+
+    if chain:
+        return {
+            "source": "database",
+            "underlying": underlying,
+            "data": [
+                {
+                    "strike": s.strike,
+                    "option_type": s.option_type,
+                    "ltp": s.ltp,
+                    "bid": s.bid,
+                    "ask": s.ask,
+                    "volume": s.volume,
+                    "oi": s.oi,
+                    "change_oi": s.change_oi,
+                    "iv": s.iv,
+                    "delta": s.delta,
+                    "gamma": s.gamma,
+                    "theta": s.theta,
+                    "vega": s.vega,
+                    "intrinsic_value": s.intrinsic_value,
+                    "time_value": s.time_value,
+                    "spot_price": s.spot_price,
+                    "time": s.time.isoformat(),
+                }
+                for s in chain
+            ],
+            "count": len(chain),
+        }
 
     return {
         "source": "none",

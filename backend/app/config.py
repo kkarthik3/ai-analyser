@@ -56,6 +56,7 @@ class Settings(BaseSettings):
     fyers_redirect_uri: str = "http://localhost:8000/api/v1/auth/callback"
     fyers_access_token: str = ""
     fyers_refresh_token: str = ""
+    fyers_pin: str = ""
 
     # ---- Groq AI ----
     groq_api_key: str = ""

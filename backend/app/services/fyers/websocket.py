@@ -103,7 +103,7 @@ class FyersWebSocketManager:
                 on_message=self._on_message,
                 on_error=self._on_error,
                 on_close=self._on_close,
-                on_open=lambda: self._on_open(symbols, data_type),
+                on_connect=lambda: self._on_open(symbols, data_type),
             )
             self._ws.connect()
 
@@ -151,11 +151,11 @@ class FyersWebSocketManager:
         """Called on WebSocket error."""
         logger.error(f"WebSocket error: {error}")
 
-    def _on_close(self) -> None:
+    def _on_close(self, message: Optional[Any] = None) -> None:
         """Called when WebSocket closes."""
         self._is_connected = False
         self._stats["reconnect_count"] += 1
-        logger.warning("WebSocket connection closed")
+        logger.warning(f"WebSocket connection closed: {message}")
 
     def _parse_message(self, raw_message: Any) -> Optional[dict[str, Any]]:
         """Parse a raw FYERS WebSocket message into a standardized dict.
