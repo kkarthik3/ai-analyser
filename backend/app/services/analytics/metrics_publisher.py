@@ -78,3 +78,35 @@ class MetricsPublisher:
                 session.add(record)
         except Exception as e:
             logger.error(f"Error saving features to store: {e}")
+
+    async def publish_scores(
+        self,
+        symbol: str,
+        scores: Dict[str, Any]
+    ) -> None:
+        """
+        Publish computed scores to Redis and database.
+        """
+        now = datetime.now(timezone.utc)
+
+        # 1. Update Redis cache
+        await self._cache.update_scores(symbol, scores)
+
+        # 2. Write to DB
+        try:
+            async with get_async_session() as session:
+                from app.db.models.computed_metrics import ComputedMetric
+                records = [
+                    ComputedMetric(
+                        time=now,
+                        symbol=symbol,
+                        metric_name=f"score_{name}",
+                        value=float(val) if isinstance(val, (int, float)) else 0.0,
+                        metadata_={"string_val": str(val)} if not isinstance(val, (int, float)) else {}
+                    )
+                    for name, val in scores.items()
+                ]
+                session.add_all(records)
+            logger.debug(f"Published scores for {symbol}")
+        except Exception as e:
+            logger.error(f"Error saving computed scores to database: {e}")

@@ -19,7 +19,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 from app.db.engine import get_session
 from app.db.repositories.tick_repo import TickRepository
 from app.db.repositories.option_chain_repo import OptionChainRepository
-from app.dependencies import get_cache_instance
+from app.dependencies import get_cache_instance, get_fyers_client_instance
 
 router = APIRouter()
 
@@ -212,3 +212,75 @@ async def get_scores(symbol: str):
         "symbol": symbol,
         "scores": scores or {},
     }
+
+
+@router.get("/portfolio/positions")
+async def get_positions():
+    """Get current positions from FYERS."""
+    try:
+        client = get_fyers_client_instance()
+        res = await client.get_positions()
+        return res
+    except Exception as e:
+        return {"s": "error", "message": str(e)}
+
+
+@router.get("/portfolio/holdings")
+async def get_holdings():
+    """Get current holdings from FYERS."""
+    try:
+        client = get_fyers_client_instance()
+        res = await client.get_holdings()
+        return res
+    except Exception as e:
+        return {"s": "error", "message": str(e)}
+
+
+@router.get("/portfolio/profile")
+async def get_profile():
+    """Get user profile from FYERS."""
+    try:
+        client = get_fyers_client_instance()
+        res = await client.get_profile()
+        return res
+    except Exception as e:
+        return {"s": "error", "message": str(e)}
+
+
+@router.get("/portfolio/funds")
+async def get_funds():
+    """Get account fund details from FYERS."""
+    try:
+        client = get_fyers_client_instance()
+        res = await client.get_funds()
+        return res
+    except Exception as e:
+        return {"s": "error", "message": str(e)}
+
+
+@router.get("/ai-report/{symbol}")
+async def get_ai_report(symbol: str, session: AsyncSession = Depends(get_session)):
+    """Get the latest AI report for a symbol from the database."""
+    try:
+        from app.db.models.ai_reports import AIReport
+        from sqlalchemy import select
+        
+        stmt = (
+            select(AIReport)
+            .where(AIReport.symbol == symbol)
+            .order_by(AIReport.time.desc())
+            .limit(1)
+        )
+        result = await session.execute(stmt)
+        report = result.scalar_one_or_none()
+        
+        if report:
+            return {
+                "symbol": symbol,
+                "content": report.content,
+                "time": report.time.isoformat(),
+                "model": report.model_used,
+            }
+        return {"symbol": symbol, "content": None, "message": "No AI report generated yet."}
+    except Exception as e:
+        return {"error": str(e)}

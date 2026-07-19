@@ -5,7 +5,7 @@ import { motion } from "framer-motion";
 import { Card } from "@/components/ui/Card";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { ScoreGauge } from "@/components/ui/ScoreGauge";
-import { getSystemStatus, getAuthStatus } from "@/lib/api";
+import { getSystemStatus, getAuthStatus, getProfile, getFunds, getScores, getAIReport } from "@/lib/api";
 import { getMarketWebSocket } from "@/lib/ws";
 
 export default function DashboardPage() {
@@ -20,15 +20,57 @@ export default function DashboardPage() {
   });
   const [authStatus, setAuthStatus] = useState<{ authenticated: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
+  
+  const [profile, setProfile] = useState<any>(null);
+  const [funds, setFunds] = useState<any>(null);
+  const [aiReport, setAiReport] = useState<string | null>(null);
 
-  // Poll system statuses
+  // Poll system statuses & profile/funds & scores/reports
   useEffect(() => {
     const fetchStatus = async () => {
       try {
         const auth = await getAuthStatus();
         setAuthStatus(auth);
+        
+        if (auth?.authenticated) {
+          const prof = await getProfile();
+          if (prof.s === "ok" && prof.data) {
+            setProfile(prof.data);
+          }
+          
+          const f = await getFunds();
+          if (f.s === "ok" && f.fund_limit) {
+            setFunds(f.fund_limit);
+          }
+        }
+
+        // Fetch calculated live scores
+        try {
+          const sc = await getScores("NSE:NIFTY50-INDEX");
+          if (sc && sc.scores && Object.keys(sc.scores).length > 0) {
+            setScores({
+              bull_score: (sc.scores.bull_score as number) ?? 50,
+              bear_score: (sc.scores.bear_score as number) ?? 50,
+              confidence: (sc.scores.confidence as number) ?? 0,
+              regime: (sc.scores.regime as string) ?? "NORMAL_RANGE",
+              recommendation: (sc.scores.recommendation as string) ?? "NO_TRADE",
+            });
+          }
+        } catch (err) {
+          console.error("Failed to fetch live scores:", err);
+        }
+
+        // Fetch live AI intelligence report
+        try {
+          const ai = await getAIReport("NSE:NIFTY50-INDEX");
+          if (ai && ai.content) {
+            setAiReport(ai.content);
+          }
+        } catch (err) {
+          console.error("Failed to fetch live AI report:", err);
+        }
       } catch (err) {
-        console.error("Failed to fetch auth status:", err);
+        console.error("Failed to fetch auth/portfolio status:", err);
       } finally {
         setLoading(false);
       }
@@ -109,15 +151,21 @@ export default function DashboardPage() {
       </div>
 
       {/* Details layout */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-4">
+      <div className="grid grid-cols-1 lg:grid-cols-3 gap-4">
         <Card title="AI Intelligence Explainer" subtitle="Groq-powered market overview (updated minute-by-minute)">
-          <div className="text-sm space-y-3 leading-relaxed text-[var(--color-text-secondary)]">
-            <p>
-              <b>Summary:</b> Market trading inside a consolidated range. Institutional dealer positioning indicates solid support around the {niftySpot} area.
-            </p>
-            <p>
-              <b>GEX Profile:</b> Positive Gamma regime holds. Options pricing models imply restricted upper expansion bounds. Recommend defensive option strategies or long volatility spreads upon breakout confirmation.
-            </p>
+          <div className="text-sm space-y-3 leading-relaxed text-[var(--color-text-secondary)] whitespace-pre-wrap font-sans">
+            {aiReport ? (
+              <p>{aiReport}</p>
+            ) : (
+              <>
+                <p>
+                  <b>Summary:</b> Market trading inside a consolidated range. Institutional dealer positioning indicates solid support around the {niftySpot} area.
+                </p>
+                <p>
+                  <b>GEX Profile:</b> Positive Gamma regime holds. Options pricing models imply restricted upper expansion bounds. Recommend defensive option strategies or long volatility spreads upon breakout confirmation.
+                </p>
+              </>
+            )}
           </div>
         </Card>
 
@@ -136,6 +184,79 @@ export default function DashboardPage() {
               <span className="text-[var(--color-bull)] font-mono">Positive GEX</span>
             </div>
           </div>
+        </Card>
+
+        <Card title="Fyers Account Profile" subtitle="Real-time margin and balances">
+          {(() => {
+            const activeProfile = profile || (authStatus?.authenticated ? null : {
+              name: "KARTHIKEYAN KANNAN",
+              fy_id: "XK03114",
+            });
+            const activeFunds = funds || (authStatus?.authenticated ? null : [
+              { title: "Available Balance", equityAmount: 25000.73 },
+              { title: "Utilized Amount", equityAmount: 0.00 },
+              { title: "Total Balance", equityAmount: 25000.73 },
+            ]);
+
+            if (!activeProfile) {
+              return (
+                <div className="flex justify-center items-center py-10 text-xs text-[var(--color-text-muted)]">
+                  No active Fyers profile connected.
+                </div>
+              );
+            }
+
+            const available = activeFunds?.find((f: any) => f.title === "Available Balance" || f.id === 10)?.equityAmount ?? 0;
+            const utilized = activeFunds?.find((f: any) => f.title === "Utilized Amount" || f.id === 2)?.equityAmount ?? 0;
+            const total = activeFunds?.find((f: any) => f.title === "Total Balance" || f.id === 1)?.equityAmount ?? 0;
+
+            // Simple initials builder
+            const initials = activeProfile.name 
+              ? activeProfile.name.split(" ").map((n: string) => n[0]).join("").slice(0, 2) 
+              : "FI";
+
+            return (
+              <div className="space-y-4">
+                <div className="flex items-center gap-3">
+                  <div className="w-10 h-10 rounded-full bg-[var(--color-accent-dim)] text-[var(--color-accent)] border border-[var(--color-accent)]/20 flex items-center justify-center font-bold text-sm shadow-inner select-none flex-shrink-0">
+                    {initials}
+                  </div>
+                  <div className="overflow-hidden">
+                    <h4 className="text-xs font-bold text-[var(--color-text-primary)] truncate">{activeProfile.name}</h4>
+                    <div className="flex items-center gap-1.5 mt-0.5">
+                      <p className="text-[10px] text-[var(--color-text-muted)] truncate font-semibold">Client ID: {activeProfile.fy_id}</p>
+                      {!profile && (
+                        <span className="text-[9px] bg-[var(--color-info-dim)] text-[var(--color-info)] px-1 rounded font-bold uppercase tracking-wider scale-90">
+                          Demo
+                        </span>
+                      )}
+                    </div>
+                  </div>
+                </div>
+                
+                <div className="space-y-2 border-t border-[var(--color-border)] pt-3 font-mono text-xs">
+                  <div className="flex justify-between">
+                    <span className="text-[var(--color-text-muted)]">Available Margin</span>
+                    <span className="text-[var(--color-bull)] font-bold">
+                      ₹{Number(available).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-[var(--color-text-muted)]">Utilized Margin</span>
+                    <span className="text-[var(--color-bear)] font-bold">
+                      ₹{Number(utilized).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                  <div className="flex justify-between border-t border-[var(--color-border-subtle)] pt-1.5 text-xs font-bold">
+                    <span className="text-[var(--color-text-secondary)]">Total Balance</span>
+                    <span className="text-[var(--color-text-primary)]">
+                      ₹{Number(total).toLocaleString("en-IN", { minimumFractionDigits: 2 })}
+                    </span>
+                  </div>
+                </div>
+              </div>
+            );
+          })()}
         </Card>
       </div>
     </div>

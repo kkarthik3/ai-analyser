@@ -38,6 +38,7 @@ from app.services.analytics.oi.strike_analysis import analyze_strikes
 
 # Feature store
 from app.services.analytics.features.feature_pipeline import generate_feature_matrix
+from app.services.intelligence.scoring_engine import ScoringEngine
 
 logger = logging.getLogger(__name__)
 
@@ -199,7 +200,12 @@ class ComputeEngine:
             # Extract latest feature row
             latest_features = feature_matrix.iloc[-1].to_dict()
 
-            # 6. Publish outputs
+            # 6. Compute Scores & Regimes
+            scoring_engine = ScoringEngine()
+            scores = scoring_engine.calculate_scores(metrics)
+            await self._publisher.publish_scores(symbol, scores)
+
+            # 7. Publish outputs
             await self._publisher.publish_metrics(symbol, metrics)
             await self._publisher.publish_features(symbol, latest_features)
 

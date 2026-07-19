@@ -110,6 +110,50 @@ export async function getScores(symbol: string) {
   }>(`/api/v1/market/scores/${symbol}`);
 }
 
+export async function getPositions() {
+  return fetchApi<{
+    s: string;
+    netPositions?: any[];
+    overallPosition?: any;
+    message?: string;
+  }>("/api/v1/market/portfolio/positions");
+}
+
+export async function getHoldings() {
+  return fetchApi<{
+    s: string;
+    holdings?: any[];
+    overall?: any;
+    message?: string;
+  }>("/api/v1/market/portfolio/holdings");
+}
+
+export async function getProfile() {
+  return fetchApi<{
+    s: string;
+    data?: any;
+    message?: string;
+  }>("/api/v1/market/portfolio/profile");
+}
+
+export async function getFunds() {
+  return fetchApi<{
+    s: string;
+    fund_limit?: any[];
+    message?: string;
+  }>("/api/v1/market/portfolio/funds");
+}
+
+export async function getAIReport(symbol: string) {
+  return fetchApi<{
+    symbol: string;
+    content: string | null;
+    time?: string;
+    model?: string;
+    message?: string;
+  }>(`/api/v1/market/ai-report/${symbol}`);
+}
+
 // ---- Types ----
 
 export interface OptionChainRow {

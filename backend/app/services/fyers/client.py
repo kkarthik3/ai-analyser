@@ -216,3 +216,13 @@ class FyersClient:
         """Get account fund details."""
         client = self._ensure_client()
         return await self._run_sync(client.funds)
+
+    async def get_positions(self) -> dict[str, Any]:
+        """Get current open/closed positions for the day."""
+        client = self._ensure_client()
+        return await self._run_sync(client.positions)
+
+    async def get_holdings(self) -> dict[str, Any]:
+        """Get long-term holdings."""
+        client = self._ensure_client()
+        return await self._run_sync(client.holdings)
