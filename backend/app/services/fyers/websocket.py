@@ -6,6 +6,8 @@ Handles:
   - Symbol subscription management
   - Message routing to registered callbacks
   - Error handling and auto-reconnection
+  - Auth-error detection: fires an ``on_auth_error`` callback when FYERS
+    rejects the token over the WebSocket connection
 """
 
 from __future__ import annotations
@@ -21,16 +23,30 @@ from app.services.fyers.auth import FyersAuthService
 logger = logging.getLogger(__name__)
 settings = get_settings()
 
+# FYERS error codes indicating an invalid / expired token
+_AUTH_ERROR_CODES = {-15, -16, -99}
+
 
 class FyersWebSocketManager:
     """Manages the FYERS Data WebSocket for real-time streaming.
 
     Since the FYERS SDK's WebSocket is synchronous, we run it in a
     background thread and bridge messages to asyncio via a queue.
+
+    Auth-error handling:
+        Pass an ``on_auth_error`` coroutine or callable to be notified when
+        FYERS rejects the token.  The manager will stop reconnecting and call
+        the handler so that the rest of the system can tear down cleanly.
     """
 
-    def __init__(self, auth_service: FyersAuthService) -> None:
+    def __init__(
+        self,
+        auth_service: FyersAuthService,
+        on_auth_error: Optional[Callable[[], Any]] = None,
+    ) -> None:
         self._auth = auth_service
+        self._on_auth_error = on_auth_error
+
         self._ws = None
         self._subscribed_symbols: list[str] = []
         self._callbacks: list[Callable[[dict[str, Any]], None]] = []
@@ -45,6 +61,8 @@ class FyersWebSocketManager:
             "connect_time": None,
             "reconnect_count": 0,
         }
+        # asyncio event loop reference — set when connect() is called
+        self._loop: Optional[asyncio.AbstractEventLoop] = None
 
     @property
     def is_connected(self) -> bool:
@@ -63,7 +81,7 @@ class FyersWebSocketManager:
 
         Args:
             symbols: List of FYERS symbols to subscribe to.
-            data_type: "symbolUpdate" (full) or "lite" (LTP only).
+            data_type: ``"symbolUpdate"`` (full) or ``"lite"`` (LTP only).
         """
         token = self._auth.formatted_token
         if not token:
@@ -71,13 +89,14 @@ class FyersWebSocketManager:
 
         self._subscribed_symbols = symbols
         self._is_running = True
+        self._loop = asyncio.get_event_loop()
 
         logger.info(
-            f"Starting WebSocket connection for {len(symbols)} symbols "
-            f"(mode: {data_type})"
+            "Starting WebSocket connection for %d symbols (mode: %s)",
+            len(symbols),
+            data_type,
         )
 
-        # Run the synchronous FYERS WebSocket in a background thread
         loop = asyncio.get_event_loop()
         await loop.run_in_executor(
             None,
@@ -107,8 +126,8 @@ class FyersWebSocketManager:
             )
             self._ws.connect()
 
-        except Exception as e:
-            logger.error(f"WebSocket connection failed: {e}")
+        except Exception as exc:
+            logger.error("WebSocket connection failed: %s", exc)
             self._is_connected = False
 
     def _on_open(self, symbols: list[str], data_type: str) -> None:
@@ -116,7 +135,7 @@ class FyersWebSocketManager:
         self._is_connected = True
         self._reconnect_attempts = 0
         self._stats["connect_time"] = datetime.now().isoformat()
-        logger.info(f"WebSocket connected, subscribing to {len(symbols)} symbols")
+        logger.info("WebSocket connected — subscribing to %d symbols", len(symbols))
 
         if self._ws:
             self._ws.subscribe(symbols=symbols, data_type=data_type)
@@ -126,36 +145,76 @@ class FyersWebSocketManager:
         self._stats["messages_received"] += 1
         self._stats["last_message_time"] = datetime.now().isoformat()
 
-        # Parse the message
         parsed = self._parse_message(message)
         if parsed:
-            # Put into async queue for processing
+            # Put into async queue for the DataManager consumer
             try:
                 self._message_queue.put_nowait(parsed)
             except asyncio.QueueFull:
-                # Drop oldest message if queue is full (backpressure)
+                # Drop oldest message under backpressure
                 try:
                     self._message_queue.get_nowait()
                     self._message_queue.put_nowait(parsed)
                 except asyncio.QueueEmpty:
                     pass
 
-            # Fire callbacks
+            # Fire registered callbacks
             for callback in self._callbacks:
                 try:
                     callback(parsed)
-                except Exception as e:
-                    logger.error(f"Callback error: {e}")
+                except Exception as exc:
+                    logger.error("Callback error: %s", exc)
 
     def _on_error(self, error: Any) -> None:
-        """Called on WebSocket error."""
-        logger.error(f"WebSocket error: {error}")
+        """Called on WebSocket error.
+
+        Detects auth-related error codes and fires the ``on_auth_error`` handler
+        instead of allowing the SDK to blindly reconnect with an invalid token.
+        """
+        error_str = str(error)
+        logger.error("WebSocket error: %s", error_str)
+
+        # Check if the error contains an auth error code
+        for code in _AUTH_ERROR_CODES:
+            if str(code) in error_str:
+                logger.warning(
+                    "WebSocket auth error detected (code %s) — stopping reconnects", code
+                )
+                self._is_running = False
+                self._is_connected = False
+                # Close the underlying connection to prevent auto-reconnect
+                if self._ws:
+                    try:
+                        self._ws.close_connection()
+                    except Exception:
+                        pass
+
+                # Notify the system asynchronously
+                if self._on_auth_error and self._loop:
+                    asyncio.run_coroutine_threadsafe(
+                        self._fire_auth_error(f"WebSocket auth error code {code}"),
+                        self._loop,
+                    )
+                return
 
     def _on_close(self, message: Optional[Any] = None) -> None:
         """Called when WebSocket closes."""
         self._is_connected = False
         self._stats["reconnect_count"] += 1
-        logger.warning(f"WebSocket connection closed: {message}")
+        if self._is_running:
+            logger.warning("WebSocket connection closed (will reconnect): %s", message)
+        else:
+            logger.info("WebSocket connection closed (intentional): %s", message)
+
+    async def _fire_auth_error(self, reason: str) -> None:
+        """Async wrapper to invoke the auth-error handler from the WS thread."""
+        if self._on_auth_error:
+            try:
+                result = self._on_auth_error(reason)
+                if asyncio.iscoroutine(result):
+                    await result
+            except Exception as exc:
+                logger.error("on_auth_error handler raised: %s", exc)
 
     def _parse_message(self, raw_message: Any) -> Optional[dict[str, Any]]:
         """Parse a raw FYERS WebSocket message into a standardized dict.
@@ -206,7 +265,6 @@ class FyersWebSocketManager:
     async def update_subscription(self, symbols: list[str]) -> None:
         """Update the subscribed symbols (e.g., when ATM changes)."""
         if self._ws and self._is_connected:
-            # Unsubscribe old symbols that aren't in the new list
             old_only = set(self._subscribed_symbols) - set(symbols)
             new_only = set(symbols) - set(self._subscribed_symbols)
 
@@ -217,7 +275,9 @@ class FyersWebSocketManager:
 
             self._subscribed_symbols = symbols
             logger.info(
-                f"Updated subscription: -{len(old_only)} +{len(new_only)} symbols"
+                "Updated subscription: -%d +%d symbols",
+                len(old_only),
+                len(new_only),
             )
 
     async def disconnect(self) -> None:
@@ -226,7 +286,7 @@ class FyersWebSocketManager:
         if self._ws:
             try:
                 self._ws.close_connection()
-            except Exception as e:
-                logger.error(f"Error closing WebSocket: {e}")
+            except Exception as exc:
+                logger.error("Error closing WebSocket: %s", exc)
         self._is_connected = False
         logger.info("WebSocket disconnected")

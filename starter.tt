@@ -1,0 +1,9 @@
+docker compose up -d postgres redis
+cd backend
+uv run alembic upgrade head
+uv run uvicorn app.main:app --reload
+cd backend
+uv run celery -A app.tasks.celery_app worker --loglevel=info --pool=solo
+cd frontend
+npm run dev
+

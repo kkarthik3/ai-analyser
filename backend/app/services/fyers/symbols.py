@@ -41,6 +41,24 @@ STRIKE_STEPS = {
     "ICICIBANK": 10,
 }
 
+# FYERS uses different names in option symbols vs index symbols.
+# e.g. the index trades as "NSE:NIFTY50-INDEX" but options use "NIFTY" prefix.
+OPTION_SYMBOL_PREFIX = {
+    "NIFTY50": "NIFTY",
+    "NIFTYBANK": "BANKNIFTY",
+}
+
+
+def get_option_prefix(underlying: str) -> str:
+    """Return the FYERS option symbol prefix for an underlying.
+
+    'NIFTY50'   → 'NIFTY'
+    'NIFTYBANK' → 'BANKNIFTY'
+    'FINNIFTY'  → 'FINNIFTY'
+    'SENSEX'    → 'SENSEX'
+    """
+    return OPTION_SYMBOL_PREFIX.get(underlying, underlying)
+
 
 def get_underlying_name(fyers_symbol: str) -> str:
     """Extract underlying name from FYERS symbol.
@@ -105,6 +123,12 @@ def get_nearest_expiry(
     return ref + timedelta(days=days_ahead)
 
 
+# SENSEX options trade on BSE, all others on NSE
+_EXCHANGE_MAP: dict[str, str] = {
+    "SENSEX": "BSE",
+}
+
+
 def build_option_symbols(
     underlying: str,
     spot_price: float,
@@ -117,19 +141,26 @@ def build_option_symbols(
     Returns a dict with 'calls', 'puts', and 'all' keys.
 
     Args:
-        underlying: Clean underlying name (e.g., "NIFTY")
+        underlying: Clean underlying name (e.g., "NIFTY50", "NIFTYBANK")
         spot_price: Current spot price
         expiry: Expiry date
         strike_count: Number of strikes above and below ATM
-        exchange: Exchange prefix (usually NSE)
+        exchange: Exchange prefix override (auto-detected when not provided)
     """
+    # Normalise to the prefix FYERS uses in option symbols
+    # e.g. "NIFTY50" → "NIFTY", "NIFTYBANK" → "BANKNIFTY"
+    option_prefix = get_option_prefix(underlying)
+
+    # Auto-detect correct exchange for the underlying
+    resolved_exchange = _EXCHANGE_MAP.get(option_prefix, exchange)
+
     step = get_strike_step(underlying)
     atm = round_to_strike(spot_price, step)
 
     # Generate strike range: ATM ± strike_count
     strikes = [atm + (i * step) for i in range(-strike_count, strike_count + 1)]
 
-    # Format expiry: YY + MMM (e.g., "24JUL")
+    # Format expiry: YY + MMM (e.g., "26JUL")
     yy = str(expiry.year)[-2:]
     mmm = MONTH_MAP[expiry.month]
 
@@ -138,8 +169,8 @@ def build_option_symbols(
 
     for strike in strikes:
         strike_str = str(int(strike))
-        ce_symbol = f"{exchange}:{underlying}{yy}{mmm}{strike_str}CE"
-        pe_symbol = f"{exchange}:{underlying}{yy}{mmm}{strike_str}PE"
+        ce_symbol = f"{resolved_exchange}:{option_prefix}{yy}{mmm}{strike_str}CE"
+        pe_symbol = f"{resolved_exchange}:{option_prefix}{yy}{mmm}{strike_str}PE"
         calls.append(ce_symbol)
         puts.append(pe_symbol)
 
@@ -150,6 +181,8 @@ def build_option_symbols(
         "strikes": strikes,
         "atm": atm,
         "expiry": expiry.isoformat(),
+        "option_prefix": option_prefix,
+        "exchange": resolved_exchange,
     }
 
 

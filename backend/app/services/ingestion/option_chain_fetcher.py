@@ -216,6 +216,67 @@ class OptionChainFetcher:
             records = []
 
             for option in options_chain:
+                # 1. Check if this is a flat option contract dict
+                opt_type = option.get("option_type")
+                if opt_type in ("CE", "PE"):
+                    strike = option.get("strike_price") or option.get("strikePrice", 0)
+                    ltp = option.get("ltp") or option.get("lastPrice", 0)
+                    symbol = option.get("symbol", "")
+
+                    # Compute IV
+                    iv = compute_iv(
+                        market_price=ltp,
+                        spot=spot_price,
+                        strike=strike,
+                        time_to_expiry=time_to_expiry,
+                        rate=RISK_FREE_RATE,
+                        option_type=opt_type,
+                    )
+
+                    # Compute Greeks (using computed IV or fallback)
+                    greeks = {"delta": None, "gamma": None, "theta": None, "vega": None, "rho": None}
+                    if iv and iv > 0:
+                        greeks = compute_greeks(
+                            spot=spot_price,
+                            strike=strike,
+                            time_to_expiry=time_to_expiry,
+                            rate=RISK_FREE_RATE,
+                            sigma=iv,
+                            option_type=opt_type,
+                        )
+
+                    # Compute intrinsic and time value
+                    if opt_type == "CE":
+                        intrinsic = max(spot_price - strike, 0)
+                    else:
+                        intrinsic = max(strike - spot_price, 0)
+                    time_value = max(ltp - intrinsic, 0) if ltp else 0
+
+                    record = {
+                        "time": now,
+                        "underlying": get_underlying_name(underlying_symbol),
+                        "expiry": nearest_expiry,
+                        "strike": strike,
+                        "option_type": opt_type,
+                        "symbol": symbol,
+                        "ltp": ltp,
+                        "bid": option.get("bid") or option.get("bidPrice", 0),
+                        "ask": option.get("ask") or option.get("askPrice", 0),
+                        "bid_qty": option.get("bid_qty") or option.get("bidQty") or option.get("bidQuantity", 0),
+                        "ask_qty": option.get("ask_qty") or option.get("askQty") or option.get("askQuantity", 0),
+                        "volume": option.get("volume", 0),
+                        "oi": option.get("oi") or option.get("openInterest", 0),
+                        "change_oi": option.get("change_oi") or option.get("oich") or option.get("changeinOpenInterest") or option.get("changeInOI", 0),
+                        "iv": iv,
+                        **greeks,
+                        "intrinsic_value": intrinsic,
+                        "time_value": time_value,
+                        "spot_price": spot_price,
+                    }
+                    records.append(record)
+                    continue
+
+                # 2. Check if this is a nested option structure dict
                 for opt_type in ["CE", "PE"]:
                     opt_data = option.get(opt_type.lower()) or option.get(opt_type)
                     if not opt_data:
@@ -295,16 +356,25 @@ class OptionChainFetcher:
         if not expiry_data:
             return None
         try:
-            # Sort by date and return nearest
-            sorted_expiries = sorted(expiry_data, key=lambda x: x.get("date", ""))
+            # Sort by numeric timestamp (expiry) to get correct chronological order
+            sorted_expiries = sorted(expiry_data, key=lambda x: int(x.get("expiry", 0)))
             nearest = sorted_expiries[0]
-            expiry_ts = nearest.get("date") or nearest.get("expiry")
-            if isinstance(expiry_ts, (int, float)):
-                return datetime.fromtimestamp(expiry_ts).date()
-            elif isinstance(expiry_ts, str):
-                return datetime.strptime(expiry_ts, "%Y-%m-%d").date()
-        except Exception:
-            pass
+            
+            # Try parsing from timestamp first
+            expiry_val = nearest.get("expiry")
+            if expiry_val:
+                return datetime.fromtimestamp(int(expiry_val), timezone.utc).date()
+                
+            # Fallback to date string parsing
+            date_str = nearest.get("date")
+            if date_str:
+                for fmt in ("%d-%m-%Y", "%Y-%m-%d"):
+                    try:
+                        return datetime.strptime(date_str, fmt).date()
+                    except ValueError:
+                        continue
+        except Exception as e:
+            logger.warning(f"Failed to parse expiry: {e}")
         return None
 
     def _calculate_time_to_expiry(self, expiry: date) -> float:

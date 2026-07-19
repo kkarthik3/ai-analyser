@@ -3,6 +3,9 @@ ML predictions hypertable model.
 
 Stores predictions from all ML models with probability estimates
 for various gain thresholds and time horizons.
+
+Primary key is (time, symbol, model_name) — time alone is NOT unique since
+multiple models and symbols generate predictions at the same timestamp.
 """
 
 from __future__ import annotations
@@ -10,7 +13,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Float, Integer, String
+from sqlalchemy import DateTime, Float, Integer, PrimaryKeyConstraint, String
 from sqlalchemy.dialects.postgresql import JSONB
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -19,9 +22,12 @@ from app.db.models.base import Base
 
 class MLPrediction(Base):
     __tablename__ = "ml_predictions"
+    __table_args__ = (
+        PrimaryKeyConstraint("time", "symbol", "model_name", name="pk_ml_predictions"),
+    )
 
     time: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), primary_key=True, nullable=False
+        DateTime(timezone=True), nullable=False
     )
     symbol: Mapped[str] = mapped_column(String(100), nullable=False)
     model_name: Mapped[str] = mapped_column(String(50), nullable=False)

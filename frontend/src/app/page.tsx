@@ -41,19 +41,28 @@ export default function DashboardPage() {
     const ws = getMarketWebSocket();
     ws.connect();
 
-    const unsubscribe = ws.on("tick", (tick: any) => {
+    const handleTick = (tick: any) => {
       const symbol = tick.symbol;
       const ltp = tick.ltp;
+      if (symbol === "NSE:NIFTY50-INDEX") setNiftySpot(ltp);
+      else if (symbol === "NSE:NIFTYBANK-INDEX") setBankNiftySpot(ltp);
+    };
 
-      if (symbol === "NSE:NIFTY50-INDEX") {
-        setNiftySpot(ltp);
-      } else if (symbol === "NSE:NIFTYBANK-INDEX") {
-        setBankNiftySpot(ltp);
+    // Individual live tick
+    const unsubTick = ws.on("tick", handleTick);
+
+    // Initial snapshot on connect — bulk update all symbols at once
+    const unsubSnapshot = ws.on("snapshot", (snapshot: any) => {
+      if (snapshot && typeof snapshot === "object") {
+        Object.values(snapshot).forEach((tick: any) => {
+          if (tick) handleTick(tick);
+        });
       }
     });
 
     return () => {
-      unsubscribe();
+      unsubTick();
+      unsubSnapshot();
       ws.disconnect();
     };
   }, []);

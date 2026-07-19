@@ -6,6 +6,13 @@ Coordinates:
   2. REST poller → option chain → compute Greeks → batch write
   3. Real-time cache update to Redis
   4. Fan-out to downstream consumers (analytics, WebSocket broadcast)
+
+Auth contract:
+  - ``start()`` requires the auth service to already be validated.
+    It does NOT call ``load_tokens()`` or ``validate_token()`` itself —
+    that is the responsibility of the startup orchestrator (``dependencies.py``).
+  - If the auth service invalidates the token at runtime (via callbacks),
+    ``stop()`` will be called externally by the invalidation handler.
 """
 
 from __future__ import annotations
@@ -35,9 +42,9 @@ class DataManager:
     """Central coordinator for all market data ingestion.
 
     Lifecycle:
-      1. start() → authenticate → fetch initial quotes → connect WebSocket
-      2. run() → consume messages → buffer → batch write → update cache
-      3. stop() → disconnect WebSocket → flush buffers
+      1. ``start()`` — verify auth → fetch initial quotes → connect WebSocket
+      2. ``run()`` — consume messages → buffer → batch write → update cache
+      3. ``stop()`` — disconnect WebSocket → flush buffers → cancel tasks
     """
 
     def __init__(
@@ -59,6 +66,9 @@ class DataManager:
         self._is_running = False
         self._spot_prices: dict[str, float] = {}
         self._subscribers: list[Callable[[dict[str, Any]], Any]] = []
+
+        # Background task references for clean cancellation
+        self._tasks: list[asyncio.Task] = []
 
         # Statistics
         self._stats = {
@@ -88,13 +98,11 @@ class DataManager:
         self._subscribers.append(callback)
 
     async def start(self) -> None:
-        """Initialize and start the data pipeline."""
-        logger.info("Starting Data Manager...")
-        self._stats["started_at"] = datetime.now(timezone.utc).isoformat()
+        """Initialize and start the data pipeline.
 
-        # Load tokens
-        await self._auth.load_tokens()
-
+        Requires ``auth_service.is_authenticated`` to be ``True`` before calling.
+        Callers should validate the token via ``auth_service.validate_token()`` first.
+        """
         if not self._auth.is_authenticated:
             logger.warning(
                 "FYERS not authenticated. Data pipeline paused. "
@@ -102,39 +110,73 @@ class DataManager:
             )
             return
 
+        logger.info("Starting Data Manager...")
+        self._stats["started_at"] = datetime.now(timezone.utc).isoformat()
+
         # Fetch initial spot prices for all watchlist symbols
         await self._fetch_initial_prices()
 
-        # Start background tasks
+        # Mark as running before creating tasks
         self._is_running = True
-        asyncio.create_task(self._tick_consumer_loop())
-        asyncio.create_task(self._option_chain_poll_loop())
-        asyncio.create_task(self._writer.flush_loop())
 
-        # Connect WebSocket
+        # Start background tasks and retain references for clean cancellation
+        self._tasks = [
+            asyncio.create_task(self._tick_consumer_loop(), name="tick_consumer"),
+            asyncio.create_task(self._option_chain_poll_loop(), name="option_chain_poll"),
+            asyncio.create_task(self._writer.flush_loop(), name="snapshot_flush"),
+        ]
+
+        # Connect WebSocket as a separate task
         symbols = select_websocket_symbols(
             underlyings=settings.all_watchlist_symbols,
             spot_prices=self._spot_prices,
             max_symbols=200,
             strikes_per_side=settings.option_chain_strike_count,
         )
-        asyncio.create_task(self._ws.connect(symbols))
+        self._tasks.append(
+            asyncio.create_task(self._ws.connect(symbols), name="ws_connect")
+        )
 
-        logger.info(f"Data Manager started. Tracking {len(self._spot_prices)} underlyings.")
+        logger.info(
+            "Data Manager started. Tracking %d underlyings.", len(self._spot_prices)
+        )
 
     async def stop(self) -> None:
         """Gracefully stop the data pipeline."""
         logger.info("Stopping Data Manager...")
         self._is_running = False
+
+        # Cancel all background tasks
+        for task in self._tasks:
+            if not task.done():
+                task.cancel()
+
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+
+        self._tasks.clear()
+
         await self._ws.disconnect()
         await self._writer.flush()
         logger.info("Data Manager stopped.")
+
+    async def restart(self) -> None:
+        """Stop (if running) then start the pipeline.
+
+        Convenience helper used by the auth callback after a successful login.
+        """
+        if self._is_running:
+            await self.stop()
+        await self.start()
+
+    # ------------------------------------------------------------------
+    # Internal helpers
+    # ------------------------------------------------------------------
 
     async def _fetch_initial_prices(self) -> None:
         """Fetch current prices for all watchlist symbols via REST."""
         try:
             symbols = settings.all_watchlist_symbols
-            # FYERS quotes supports max 50 symbols per request
             for i in range(0, len(symbols), 50):
                 batch = symbols[i : i + 50]
                 response = await self._client.get_quotes(batch)
@@ -149,10 +191,10 @@ class DataManager:
                             self._spot_prices[underlying] = ltp
 
             logger.info(
-                f"Fetched initial prices for {len(self._spot_prices)} symbols"
+                "Fetched initial prices for %d symbols", len(self._spot_prices)
             )
-        except Exception as e:
-            logger.error(f"Failed to fetch initial prices: {e}")
+        except Exception as exc:
+            logger.error("Failed to fetch initial prices: %s", exc)
             self._stats["errors"] += 1
 
     async def _tick_consumer_loop(self) -> None:
@@ -165,7 +207,6 @@ class DataManager:
                 if message is None:
                     continue
 
-                # Handle batch messages
                 if "batch" in message:
                     for item in message["batch"]:
                         if item:
@@ -175,8 +216,8 @@ class DataManager:
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error(f"Tick consumer error: {e}")
+            except Exception as exc:
+                logger.error("Tick consumer error: %s", exc)
                 self._stats["errors"] += 1
                 await asyncio.sleep(0.1)
 
@@ -188,21 +229,17 @@ class DataManager:
 
         self._stats["ticks_processed"] += 1
 
-        # Update spot price cache
         ltp = tick.get("ltp")
         if ltp:
             self._spot_prices[symbol] = ltp
             underlying = get_underlying_name(symbol)
             self._spot_prices[underlying] = ltp
 
-        # Update Redis cache
         await self._cache.update_tick(symbol, tick)
 
-        # Buffer for batch DB write
         now = datetime.now(timezone.utc)
         tick_record = {
             "time": now,
-            "instrument_id": 1,  # Resolved during write
             "symbol": symbol,
             "ltp": tick.get("ltp"),
             "open": tick.get("open"),
@@ -215,27 +252,26 @@ class DataManager:
             "ask_qty": tick.get("ask_qty"),
             "volume": tick.get("volume"),
             "oi": tick.get("oi", 0),
-            "change_oi": 0,  # Computed from delta with previous
+            "change_oi": 0,
             "prev_close": tick.get("prev_close"),
             "change_pct": tick.get("change_pct"),
         }
         self._writer.buffer_tick(tick_record)
 
-        # Fan out to subscribers (WebSocket broadcast, etc.)
         for subscriber in self._subscribers:
             try:
                 if asyncio.iscoroutinefunction(subscriber):
                     await subscriber(tick)
                 else:
                     subscriber(tick)
-            except Exception as e:
-                logger.error(f"Subscriber error: {e}")
+            except Exception as exc:
+                logger.error("Subscriber error: %s", exc)
 
     async def _option_chain_poll_loop(self) -> None:
         """Periodically fetch option chain via REST and compute Greeks."""
         logger.info(
-            f"Option chain poller started "
-            f"(interval: {settings.option_chain_poll_interval_s}s)"
+            "Option chain poller started (interval: %ds)",
+            settings.option_chain_poll_interval_s,
         )
 
         while self._is_running:
@@ -250,7 +286,7 @@ class DataManager:
 
             except asyncio.CancelledError:
                 break
-            except Exception as e:
-                logger.error(f"Option chain poll error: {e}")
+            except Exception as exc:
+                logger.error("Option chain poll error: %s", exc)
                 self._stats["errors"] += 1
                 await asyncio.sleep(5)

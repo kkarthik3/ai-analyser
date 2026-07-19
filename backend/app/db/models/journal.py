@@ -3,6 +3,10 @@ Trade journal model.
 
 Automatically records every trade with complete entry/exit snapshots,
 Greeks, scores, P&L, exit reason, and post-trade AI analysis.
+
+Note: exit_snapshot and greeks_at_exit are nullable — they are only
+populated once the trade is closed. Open (active) trades will have NULL
+for these columns.
 """
 
 from __future__ import annotations
@@ -11,7 +15,7 @@ import uuid
 from datetime import datetime
 from typing import Optional
 
-from sqlalchemy import DateTime, Float, Integer, String, Text, func
+from sqlalchemy import DateTime, Float, ForeignKey, Integer, String, Text, func
 from sqlalchemy.dialects.postgresql import ARRAY, JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column
 
@@ -25,7 +29,9 @@ class TradeJournalEntry(Base):
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
     )
     signal_id: Mapped[Optional[uuid.UUID]] = mapped_column(
-        UUID(as_uuid=True), nullable=True
+        UUID(as_uuid=True),
+        ForeignKey("trade_signals.id", ondelete="SET NULL"),
+        nullable=True,
     )
     symbol: Mapped[str] = mapped_column(String(100), nullable=False)
     direction: Mapped[str] = mapped_column(String(20), nullable=False)
@@ -40,9 +46,11 @@ class TradeJournalEntry(Base):
     pnl_pct: Mapped[Optional[float]] = mapped_column(Float, nullable=True)
     exit_reason: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
     entry_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
-    exit_snapshot: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Nullable: populated only after trade close
+    exit_snapshot: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     greeks_at_entry: Mapped[dict] = mapped_column(JSONB, default=dict)
-    greeks_at_exit: Mapped[dict] = mapped_column(JSONB, default=dict)
+    # Nullable: populated only after trade close
+    greeks_at_exit: Mapped[Optional[dict]] = mapped_column(JSONB, nullable=True)
     scores_at_entry: Mapped[dict] = mapped_column(JSONB, default=dict)
     lessons: Mapped[dict] = mapped_column(JSONB, default=dict)
     ai_analysis: Mapped[Optional[str]] = mapped_column(Text, nullable=True)

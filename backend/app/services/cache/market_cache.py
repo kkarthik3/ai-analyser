@@ -62,6 +62,31 @@ class MarketCache:
             for symbol, data in zip(symbols, results)
         }
 
+    async def get_all_cached_ticks(self) -> dict[str, dict[str, Any]]:
+        """Scan Redis and return all currently cached ticks (any symbol).
+
+        Used to send an initial snapshot to newly-connected WebSocket clients
+        so the UI is populated immediately without waiting for the next tick.
+        """
+        pattern = f"{TICK_PREFIX}*"
+        keys = await self._redis.keys(pattern)
+        if not keys:
+            return {}
+
+        pipeline = self._redis.pipeline()
+        for key in keys:
+            pipeline.get(key)
+        values = await pipeline.execute()
+
+        result = {}
+        prefix_len = len(TICK_PREFIX)
+        for key, data in zip(keys, values):
+            if data:
+                symbol = key.decode() if isinstance(key, bytes) else key
+                symbol = symbol[prefix_len:]
+                result[symbol] = json.loads(data)
+        return result
+
     # ---- Option Chain ----
 
     async def update_chain(

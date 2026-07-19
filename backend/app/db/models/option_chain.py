@@ -3,6 +3,9 @@ Option chain snapshots hypertable model.
 
 Stores complete option chain data including locally-computed Greeks and IV.
 Each row = one strike at one point in time.
+
+Primary key is (time, underlying, strike, option_type) — time alone is NOT
+unique since an entire chain of strikes/types is captured at the same timestamp.
 """
 
 from __future__ import annotations
@@ -10,7 +13,7 @@ from __future__ import annotations
 from datetime import date, datetime
 from typing import Optional
 
-from sqlalchemy import BigInteger, Date, DateTime, Float, String, Text
+from sqlalchemy import BigInteger, Date, DateTime, Float, PrimaryKeyConstraint, String
 from sqlalchemy.orm import Mapped, mapped_column
 
 from app.db.models.base import Base
@@ -18,9 +21,15 @@ from app.db.models.base import Base
 
 class OptionChainSnapshot(Base):
     __tablename__ = "option_chain_snapshots"
+    __table_args__ = (
+        PrimaryKeyConstraint(
+            "time", "underlying", "strike", "option_type",
+            name="pk_option_chain_snapshots",
+        ),
+    )
 
     time: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), primary_key=True, nullable=False
+        DateTime(timezone=True), nullable=False
     )
     underlying: Mapped[str] = mapped_column(String(50), nullable=False)
     expiry: Mapped[date] = mapped_column(Date, nullable=False)
