@@ -184,11 +184,33 @@ class DataManager:
                 if response.get("s") == "ok" and "d" in response:
                     for quote in response["d"]:
                         symbol = quote.get("n", quote.get("symbol", ""))
-                        ltp = quote.get("v", {}).get("lp")
+                        v = quote.get("v", {})
+                        ltp = v.get("lp")
                         if symbol and ltp:
                             self._spot_prices[symbol] = ltp
                             underlying = get_underlying_name(symbol)
                             self._spot_prices[underlying] = ltp
+                            
+                            # Cache the initial quotes in Redis
+                            tick_data = {
+                                "symbol": symbol,
+                                "ltp": ltp,
+                                "open": v.get("open_price"),
+                                "high": v.get("high_price"),
+                                "low": v.get("low_price"),
+                                "close": v.get("prev_close_price") or ltp,
+                                "volume": v.get("volume"),
+                                "bid": v.get("bid"),
+                                "ask": v.get("ask"),
+                                "bid_qty": v.get("bidQuantity"),
+                                "ask_qty": v.get("askQuantity"),
+                                "oi": v.get("oi", 0),
+                                "prev_close": v.get("prev_close_price") or ltp,
+                                "timestamp": v.get("tt"),
+                                "change_pct": v.get("ch"),
+                                "received_at": datetime.now().isoformat(),
+                            }
+                            await self._cache.update_tick(symbol, tick_data)
 
             logger.info(
                 "Fetched initial prices for %d symbols", len(self._spot_prices)

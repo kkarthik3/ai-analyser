@@ -4,12 +4,28 @@ import { useEffect, useState } from "react";
 import { motion } from "framer-motion";
 import clsx from "clsx";
 
+import { getMarketWebSocket } from "@/lib/ws";
+
 type SystemStatus = "connected" | "disconnected" | "connecting";
 
 export function TopBar() {
   const [time, setTime] = useState<string>("");
   const [status, setStatus] = useState<SystemStatus>("disconnected");
   const [wsConnected, setWsConnected] = useState(false);
+
+  // Sync WebSocket connection state
+  useEffect(() => {
+    const ws = getMarketWebSocket();
+    setWsConnected(ws.isConnected);
+
+    const unsub = ws.on("connection", (data: any) => {
+      setWsConnected(data.status === "connected");
+    });
+
+    return () => {
+      unsub();
+    };
+  }, []);
 
   useEffect(() => {
     const timer = setInterval(() => {
