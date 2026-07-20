@@ -114,6 +114,7 @@ export async function getPositions() {
   return fetchApi<{
     s: string;
     netPositions?: any[];
+    overall?: any;
     overallPosition?: any;
     message?: string;
   }>("/api/v1/market/portfolio/positions");
@@ -126,6 +127,21 @@ export async function getHoldings() {
     overall?: any;
     message?: string;
   }>("/api/v1/market/portfolio/holdings");
+}
+
+export async function getTradeJournal() {
+  return fetchApi<any[]>("/api/v1/market/portfolio/journal");
+}
+
+export async function getTradeAnalytics() {
+  return fetchApi<{
+    win_rate: number;
+    profit_factor: number;
+    sharpe_ratio: number;
+    sortino_ratio: number;
+    max_drawdown: number;
+    trade_count: number;
+  }>("/api/v1/market/portfolio/analytics");
 }
 
 export async function getProfile() {

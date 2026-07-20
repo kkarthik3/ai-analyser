@@ -284,3 +284,130 @@ async def get_ai_report(symbol: str, session: AsyncSession = Depends(get_session
         return {"symbol": symbol, "content": None, "message": "No AI report generated yet."}
     except Exception as e:
         return {"error": str(e)}
+
+
+@router.get("/portfolio/journal")
+async def get_portfolio_journal(session: AsyncSession = Depends(get_session)):
+    """Get historical trade journal entries from database."""
+    try:
+        from app.db.models.journal import TradeJournalEntry
+        from sqlalchemy import select
+
+        stmt = (
+            select(TradeJournalEntry)
+            .where(TradeJournalEntry.exit_time.isnot(None))
+            .order_by(TradeJournalEntry.exit_time.desc())
+        )
+        result = await session.execute(stmt)
+        entries = result.scalars().all()
+
+        return [
+            {
+                "id": str(e.id),
+                "symbol": e.symbol,
+                "direction": e.direction,
+                "entry_time": e.entry_time.isoformat() if e.entry_time else None,
+                "exit_time": e.exit_time.isoformat() if e.exit_time else None,
+                "entry_price": e.entry_price,
+                "exit_price": e.exit_price,
+                "quantity": e.quantity,
+                "pnl": e.pnl or 0.0,
+                "pnl_pct": e.pnl_pct or 0.0,
+                "reason": e.exit_reason or "Unknown",
+                "date": e.exit_time.strftime("%Y-%m-%d") if e.exit_time else "",
+            }
+            for e in entries
+        ]
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to fetch portfolio journal: {e}")
+        return []
+
+
+@router.get("/portfolio/analytics")
+async def get_portfolio_analytics(session: AsyncSession = Depends(get_session)):
+    """Compute and get trade performance analytics dynamically."""
+    try:
+        from app.db.models.journal import TradeJournalEntry
+        from sqlalchemy import select
+        import math
+
+        stmt = select(TradeJournalEntry).where(TradeJournalEntry.exit_time.isnot(None))
+        result = await session.execute(stmt)
+        entries = result.scalars().all()
+
+        trade_count = len(entries)
+        if trade_count == 0:
+            return {
+                "win_rate": 0.0,
+                "profit_factor": 0.0,
+                "sharpe_ratio": 0.0,
+                "sortino_ratio": 0.0,
+                "max_drawdown": 0.0,
+                "trade_count": 0,
+            }
+
+        pnls = [e.pnl or 0.0 for e in entries]
+        pnl_pcts = [e.pnl_pct or 0.0 for e in entries]
+
+        # Win Rate
+        wins = [p for p in pnls if p > 0]
+        losses = [p for p in pnls if p < 0]
+        win_rate = (len(wins) / trade_count) * 100
+
+        # Profit Factor
+        total_gains = sum(wins)
+        total_losses = abs(sum(losses))
+        profit_factor = total_gains / total_losses if total_losses > 0 else (total_gains if total_gains > 0 else 0.0)
+
+        # Helper functions for stats
+        def calculate_mean(lst):
+            return sum(lst) / len(lst) if lst else 0.0
+
+        def calculate_std(lst, mean):
+            if len(lst) <= 1:
+                return 0.0
+            variance = sum((x - mean) ** 2 for x in lst) / len(lst)
+            return math.sqrt(variance)
+
+        # Sharpe / Sortino Ratio calculations
+        mean_ret = calculate_mean(pnl_pcts)
+        std_ret = calculate_std(pnl_pcts, mean_ret)
+        sharpe_ratio = (mean_ret / std_ret) if std_ret > 0 else 0.0
+
+        downside_pcts = [p for p in pnl_pcts if p < 0]
+        downside_mean = calculate_mean(downside_pcts)
+        downside_std = calculate_std(downside_pcts, downside_mean)
+        sortino_ratio = (mean_ret / downside_std) if downside_std > 0 else (sharpe_ratio if downside_mean != 0 else 0.0)
+
+        # Max Drawdown from percentage returns (peak to valley)
+        cum_ret = 0.0
+        peak = 0.0
+        max_drawdown = 0.0
+        for p in pnl_pcts:
+            cum_ret += p
+            if cum_ret > peak:
+                peak = cum_ret
+            dd = peak - cum_ret
+            if dd > max_drawdown:
+                max_drawdown = dd
+
+        return {
+            "win_rate": round(win_rate, 2),
+            "profit_factor": round(profit_factor, 2),
+            "sharpe_ratio": round(sharpe_ratio, 2),
+            "sortino_ratio": round(sortino_ratio, 2),
+            "max_drawdown": round(max_drawdown, 2),
+            "trade_count": trade_count,
+        }
+    except Exception as e:
+        import logging
+        logging.getLogger(__name__).error(f"Failed to calculate portfolio analytics: {e}")
+        return {
+            "win_rate": 0.0,
+            "profit_factor": 0.0,
+            "sharpe_ratio": 0.0,
+            "sortino_ratio": 0.0,
+            "max_drawdown": 0.0,
+            "trade_count": 0,
+        }
