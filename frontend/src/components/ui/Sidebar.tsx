@@ -32,10 +32,10 @@ const NAV_ITEMS = [
     description: "Greeks & IV Surface",
   },
   {
-    label: "Market Breadth",
+    label: "Watchlist Tickers",
     href: "/breadth",
     icon: "📈",
-    description: "Structure & Indicators",
+    description: "Watchlist Momentum & LTPs",
   },
   {
     label: "Trade Monitor",

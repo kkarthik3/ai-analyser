@@ -220,3 +220,12 @@ export interface ScoreData {
   regime: string;
   recommendation: string;
 }
+
+export async function getOptionChainExpiries(underlying: string) {
+  return fetchApi<string[]>(`/api/v1/market/option-chain/${underlying}/expiries`);
+}
+
+export async function getAnalyticsHistory(underlying: string, expiry?: string) {
+  const params = expiry ? `?expiry=${expiry}` : "";
+  return fetchApi<any[]>(`/api/v1/market/option-chain/${underlying}/analytics-history${params}`);
+}

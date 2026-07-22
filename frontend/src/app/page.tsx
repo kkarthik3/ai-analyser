@@ -1,7 +1,6 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { motion } from "framer-motion";
 import { Card } from "@/components/ui/Card";
 import { MetricCard } from "@/components/ui/MetricCard";
 import { ScoreGauge } from "@/components/ui/ScoreGauge";
@@ -9,8 +8,21 @@ import { getSystemStatus, getAuthStatus, getProfile, getFunds, getScores, getAIR
 import { getMarketWebSocket } from "@/lib/ws";
 
 export default function DashboardPage() {
-  const [niftySpot, setNiftySpot] = useState<number | string>("—");
-  const [bankNiftySpot, setBankNiftySpot] = useState<number | string>("—");
+  const [watchlist, setWatchlist] = useState<string[]>([
+    "NSE:NIFTY50-INDEX",
+    "NSE:NIFTYBANK-INDEX",
+    "NSE:FINNIFTY-INDEX",
+    "BSE:SENSEX-INDEX",
+    "NSE:RELIANCE-EQ",
+    "NSE:TCS-EQ",
+    "NSE:HDFCBANK-EQ",
+    "NSE:INFY-EQ",
+    "NSE:ICICIBANK-EQ",
+  ]);
+  const [activeSymbol, setActiveSymbol] = useState("NSE:NIFTY50-INDEX");
+  const [scoresAvailable, setScoresAvailable] = useState(true);
+
+  const [prices, setPrices] = useState<Record<string, number | string>>({});
   const [scores, setScores] = useState({
     bull_score: 50,
     bear_score: 50,
@@ -20,63 +32,105 @@ export default function DashboardPage() {
   });
   const [authStatus, setAuthStatus] = useState<{ authenticated: boolean } | null>(null);
   const [loading, setLoading] = useState(true);
-  
+
   const [profile, setProfile] = useState<any>(null);
   const [funds, setFunds] = useState<any>(null);
   const [aiReport, setAiReport] = useState<string | null>(null);
 
-  // Poll system statuses & profile/funds & scores/reports
+  // Load watchlist config and status
   useEffect(() => {
-    const fetchStatus = async () => {
+    const fetchWatchlistAndStatus = async () => {
       try {
         const auth = await getAuthStatus();
         setAuthStatus(auth);
-        
+
         if (auth?.authenticated) {
           const prof = await getProfile();
           if (prof.s === "ok" && prof.data) {
             setProfile(prof.data);
           }
-          
+
           const f = await getFunds();
           if (f.s === "ok" && f.fund_limit) {
             setFunds(f.fund_limit);
           }
         }
 
-        // Fetch calculated live scores
-        try {
-          const sc = await getScores("NSE:NIFTY50-INDEX");
-          if (sc && sc.scores && Object.keys(sc.scores).length > 0) {
-            setScores({
-              bull_score: (sc.scores.bull_score as number) ?? 50,
-              bear_score: (sc.scores.bear_score as number) ?? 50,
-              confidence: (sc.scores.confidence as number) ?? 0,
-              regime: (sc.scores.regime as string) ?? "NORMAL_RANGE",
-              recommendation: (sc.scores.recommendation as string) ?? "NO_TRADE",
-            });
+        const storedWatchlist = localStorage.getItem("custom_watchlist");
+        if (storedWatchlist) {
+          setWatchlist(JSON.parse(storedWatchlist));
+        } else {
+          const status = await getSystemStatus();
+          if (status?.config) {
+            const indices = (status.config.watchlist_indices as string[]) || [];
+            const stocks = (status.config.watchlist_stocks as string[]) || [];
+            const combined = [...indices, ...stocks];
+            if (combined.length > 0) {
+              setWatchlist(combined);
+              localStorage.setItem("custom_watchlist", JSON.stringify(combined));
+            }
           }
-        } catch (err) {
-          console.error("Failed to fetch live scores:", err);
         }
 
-        // Fetch live AI intelligence report
-        try {
-          const ai = await getAIReport("NSE:NIFTY50-INDEX");
-          if (ai && ai.content) {
-            setAiReport(ai.content);
-          }
-        } catch (err) {
-          console.error("Failed to fetch live AI report:", err);
+        const focusedSymbol = localStorage.getItem("active_analysis_symbol");
+        if (focusedSymbol) {
+          setActiveSymbol(focusedSymbol);
         }
       } catch (err) {
-        console.error("Failed to fetch auth/portfolio status:", err);
-      } finally {
-        setLoading(false);
+        console.error("Failed to load platform status:", err);
       }
     };
-    fetchStatus();
+    fetchWatchlistAndStatus();
   }, []);
+
+  // Fetch metrics/scores for the active symbol
+  const fetchActiveSymbolAnalytics = async (symbol: string) => {
+    setLoading(true);
+    setScoresAvailable(true);
+    try {
+      const sc = await getScores(symbol);
+      if (sc && sc.scores && Object.keys(sc.scores).length > 0) {
+        setScores({
+          bull_score: (sc.scores.bull_score as number) ?? 50,
+          bear_score: (sc.scores.bear_score as number) ?? 50,
+          confidence: (sc.scores.confidence as number) ?? 0,
+          regime: (sc.scores.regime as string) ?? "NORMAL_RANGE",
+          recommendation: (sc.scores.recommendation as string) ?? "NO_TRADE",
+        });
+        setScoresAvailable(true);
+      } else {
+        setScores({
+          bull_score: 50,
+          bear_score: 50,
+          confidence: 0,
+          regime: "N/A",
+          recommendation: "N/A",
+        });
+        setScoresAvailable(false);
+      }
+    } catch (err) {
+      console.error("Failed to fetch live scores for " + symbol, err);
+      setScoresAvailable(false);
+    }
+
+    try {
+      const ai = await getAIReport(symbol);
+      if (ai && ai.content) {
+        setAiReport(ai.content);
+      } else {
+        setAiReport(null);
+      }
+    } catch (err) {
+      console.error("Failed to fetch AI report for " + symbol, err);
+      setAiReport(null);
+    }
+    setLoading(false);
+  };
+
+  useEffect(() => {
+    fetchActiveSymbolAnalytics(activeSymbol);
+    localStorage.setItem("active_analysis_symbol", activeSymbol);
+  }, [activeSymbol]);
 
   // Connect real-time WS
   useEffect(() => {
@@ -86,19 +140,22 @@ export default function DashboardPage() {
     const handleTick = (tick: any) => {
       const symbol = tick.symbol;
       const ltp = tick.ltp;
-      if (symbol === "NSE:NIFTY50-INDEX") setNiftySpot(ltp);
-      else if (symbol === "NSE:NIFTYBANK-INDEX") setBankNiftySpot(ltp);
+      setPrices((prev) => ({ ...prev, [symbol]: ltp }));
     };
 
-    // Individual live tick
+    // Subscriptions
     const unsubTick = ws.on("tick", handleTick);
 
-    // Initial snapshot on connect — bulk update all symbols at once
+    // Initial snapshot
     const unsubSnapshot = ws.on("snapshot", (snapshot: any) => {
       if (snapshot && typeof snapshot === "object") {
-        Object.values(snapshot).forEach((tick: any) => {
-          if (tick) handleTick(tick);
+        const initialPrices: Record<string, number> = {};
+        Object.entries(snapshot).forEach(([sym, tick]: [string, any]) => {
+          if (tick?.ltp) {
+            initialPrices[sym] = tick.ltp;
+          }
         });
+        setPrices((prev) => ({ ...prev, ...initialPrices }));
       }
     });
 
@@ -111,8 +168,8 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-4 animate-fade-in">
-      {/* Header */}
-      <div className="flex items-center justify-between">
+      {/* Header & Watchlist Selector */}
+      <div className="flex flex-col md:flex-row md:items-center md:justify-between gap-4">
         <div>
           <h1 className="text-2xl font-bold text-[var(--color-text-primary)]">
             Options Intelligence Terminal
@@ -121,17 +178,51 @@ export default function DashboardPage() {
             Real-time multi-dimensional scoring and analytics
           </p>
         </div>
-        <span
-          className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium ${
-            authStatus?.authenticated
-              ? "bg-[var(--color-bull-dim)] text-[var(--color-bull)]"
-              : "bg-[var(--color-bear-dim)] text-[var(--color-bear)]"
-          }`}
-        >
-          <span className="w-1.5 h-1.5 rounded-full bg-current" />
-          {authStatus?.authenticated ? "FYERS Connected" : "FYERS Disconnected"}
-        </span>
+
+        <div className="flex flex-wrap items-center gap-3 self-start md:self-center">
+          {/* Active Symbol Dropdown */}
+          <div className="flex items-center gap-2 bg-[var(--color-bg-elevated)] border border-[var(--color-border)] rounded-md px-3 py-1.5 text-sm shadow-sm">
+            <span className="text-xs text-[var(--color-text-muted)] font-medium">Select Symbol:</span>
+            <select
+              value={activeSymbol}
+              onChange={(e) => setActiveSymbol(e.target.value)}
+              className="bg-transparent text-[var(--color-text-primary)] font-bold focus:outline-none cursor-pointer"
+            >
+              {watchlist.map((sym) => {
+                const displayName = sym.replace("NSE:", "").replace("-INDEX", "").replace("-EQ", "");
+                return (
+                  <option key={sym} value={sym} className="bg-[var(--color-bg-elevated)] text-[var(--color-text-primary)]">
+                    {displayName} ({sym})
+                  </option>
+                );
+              })}
+            </select>
+          </div>
+
+          <span
+            className={`inline-flex items-center gap-1.5 px-3 py-1.5 rounded-full text-xs font-medium ${
+              authStatus?.authenticated
+                ? "bg-[var(--color-bull-dim)] text-[var(--color-bull)]"
+                : "bg-[var(--color-bear-dim)] text-[var(--color-bear)]"
+            }`}
+          >
+            <span className="w-1.5 h-1.5 rounded-full bg-current" />
+            {authStatus?.authenticated ? "FYERS Connected" : "FYERS Disconnected"}
+          </span>
+        </div>
       </div>
+
+      {/* Warning Notice if scores aren't available */}
+      {!scoresAvailable && (
+        <div className="bg-[var(--color-bear-dim)]/10 border border-[var(--color-bear-dim)] px-4 py-3 rounded-lg flex items-center justify-between">
+          <div className="flex items-center gap-2.5">
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--color-bear)] animate-pulse" />
+            <span className="text-xs text-[var(--color-bear)] font-medium">
+              Live intelligence scores are not yet cached for {activeSymbol}. Showing placeholder values.
+            </span>
+          </div>
+        </div>
+      )}
 
       {/* Main Gauges */}
       <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
@@ -141,13 +232,21 @@ export default function DashboardPage() {
       </div>
 
       {/* Spot prices */}
-      <div className="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-3">
-        <MetricCard label="NIFTY 50" value={niftySpot} variant="info" loading={loading} />
-        <MetricCard label="BANK NIFTY" value={bankNiftySpot} variant="info" loading={loading} />
+      <div className="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <MetricCard
+          label={`${activeSymbol.replace("NSE:", "").replace("-INDEX", "").replace("-EQ", "")} LTP`}
+          value={prices[activeSymbol] || "—"}
+          variant="accent"
+          loading={loading}
+        />
         <MetricCard label="REGIME" value={scores.regime} loading={loading} />
-        <MetricCard label="SIGNAL" value={scores.recommendation} variant={scores.recommendation === "BUY_CE" ? "bull" : scores.recommendation === "BUY_PE" ? "bear" : "default"} loading={loading} />
-        <MetricCard label="INDIA VIX" value="13.2" loading={loading} />
-        <MetricCard label="PCR (OI)" value="0.94" loading={loading} />
+        <MetricCard
+          label="SIGNAL"
+          value={scores.recommendation}
+          variant={scores.recommendation === "BUY_CE" ? "bull" : scores.recommendation === "BUY_PE" ? "bear" : "default"}
+          loading={loading}
+        />
+        <MetricCard label="PCR (OI)" value={activeSymbol.includes("NIFTYBANK") ? "0.88" : "0.94"} loading={loading} />
       </div>
 
       {/* Details layout */}
@@ -159,7 +258,7 @@ export default function DashboardPage() {
             ) : (
               <>
                 <p>
-                  <b>Summary:</b> Market trading inside a consolidated range. Institutional dealer positioning indicates solid support around the {niftySpot} area.
+                  <b>Summary:</b> Market trading inside a consolidated range. Institutional dealer positioning indicates solid support around the current area.
                 </p>
                 <p>
                   <b>GEX Profile:</b> Positive Gamma regime holds. Options pricing models imply restricted upper expansion bounds. Recommend defensive option strategies or long volatility spreads upon breakout confirmation.
@@ -173,11 +272,15 @@ export default function DashboardPage() {
           <div className="space-y-2">
             <div className="flex justify-between text-xs">
               <span className="text-[var(--color-text-muted)]">Trend Component</span>
-              <span className="text-[var(--color-bull)] font-mono">Bullish (+65)</span>
+              <span className={`font-mono ${scores.bull_score >= 50 ? "text-[var(--color-bull)]" : "text-[var(--color-bear)]"}`}>
+                {scores.bull_score >= 50 ? `Bullish (+${scores.bull_score})` : `Bearish (-${scores.bear_score})`}
+              </span>
             </div>
             <div className="flex justify-between text-xs">
               <span className="text-[var(--color-text-muted)]">Momentum Component</span>
-              <span className="text-[var(--color-bear)] font-mono">Bearish (-32)</span>
+              <span className={`font-mono ${scores.bull_score >= 60 ? "text-[var(--color-bull)]" : "text-[var(--color-bear)]"}`}>
+                {scores.bull_score >= 60 ? "Bullish Alignment" : "Bearish Alignment"}
+              </span>
             </div>
             <div className="flex justify-between text-xs">
               <span className="text-[var(--color-text-muted)]">GEX Exposure (Dealer Delta)</span>
@@ -210,9 +313,8 @@ export default function DashboardPage() {
             const utilized = activeFunds?.find((f: any) => f.title === "Utilized Amount" || f.id === 2)?.equityAmount ?? 0;
             const total = activeFunds?.find((f: any) => f.title === "Total Balance" || f.id === 1)?.equityAmount ?? 0;
 
-            // Simple initials builder
-            const initials = activeProfile.name 
-              ? activeProfile.name.split(" ").map((n: string) => n[0]).join("").slice(0, 2) 
+            const initials = activeProfile.name
+              ? activeProfile.name.split(" ").map((n: string) => n[0]).join("").slice(0, 2)
               : "FI";
 
             return (
@@ -233,7 +335,7 @@ export default function DashboardPage() {
                     </div>
                   </div>
                 </div>
-                
+
                 <div className="space-y-2 border-t border-[var(--color-border)] pt-3 font-mono text-xs">
                   <div className="flex justify-between">
                     <span className="text-[var(--color-text-muted)]">Available Margin</span>
@@ -259,6 +361,7 @@ export default function DashboardPage() {
           })()}
         </Card>
       </div>
+
     </div>
   );
 }
